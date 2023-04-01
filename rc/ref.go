@@ -17,8 +17,8 @@ type Ref[T any] struct {
 
 // Container for the actual data; Ref just points to this.
 type cell[T any] struct {
+	refcount int32  // The refernce count; MUST aligned.
 	value    T      // The actual value that is stored.
-	refcount int32  // The refernce count.
 	release  func() // Function to call when refcount hits zero.
 }
 
