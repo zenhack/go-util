@@ -2,14 +2,19 @@
 // This results in clearer code than using sync.Mutex directly.
 package mutex
 
-import "sync"
+import (
+	"runtime"
+	"sync"
+	"time"
+)
 
 // A Mutex[T] wraps a T, protecting it with a mutex. It must not
 // be moved after first use. The zero value is an unlocked mutex
 // containing the zero value of T.
 type Mutex[T any] struct {
-	mu  sync.Mutex
-	val T
+	mu    sync.Mutex
+	val   T
+	debug debugInfo
 }
 
 // New returns a new mutex containing the value val.
@@ -19,9 +24,40 @@ func New[T any](val T) Mutex[T] {
 
 // With invokes the callback with exclusive access to the value of the mutex.
 func (m *Mutex[T]) With(f func(*T)) {
+	var buf [1e6]byte
+	n := runtime.Stack(buf[:], false)
+	stack := string(buf[:n])
+
+	const timeout = 10 * time.Second
+	done := make(chan struct{})
+	t := time.NewTimer(timeout)
+	go func() {
+		select {
+		case <-done:
+			t.Stop()
+		case <-t.C:
+			ownerStack := m.debug.ownerStack.Load()
+
+			if ownerStack == nil {
+				// FIXME: avoid this race condition.
+				panic("Timed out waiting on mutex, with nil ownerStack!")
+			}
+			panic(
+				"Timed out waiting on mutex.\n\nLast acquired at:\n\nBEGIN OWNER STACK\n\n" +
+					*ownerStack +
+					"\n\nEND OWNER STACK\n\nWaiting at:\n\nBEGIN WAITING STACK\n\n" +
+					stack + "\n\nEND WAITING STACK\n\n",
+			)
+		}
+	}()
+
 	m.mu.Lock()
+	close(done)
 	defer m.mu.Unlock()
+
+	m.debug.ownerStack.Store(&stack)
 	f(&m.val)
+	m.debug.ownerStack.Store(nil)
 }
 
 // Lock acquires the mutex and returns a reference to the value. Call Unlock()
